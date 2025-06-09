@@ -10,20 +10,16 @@ import uuid
 from dotenv import load_dotenv
 from TTS.api import TTS
 from pydub import AudioSegment
-import imageio_ffmpeg
 
-# --- Yardımcı fonksiyonlar ---
-def get_ffprobe_path():
-    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-    ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
-    if not os.path.exists(ffprobe_path):
-        raise RuntimeError("ffprobe binary bulunamadı! Lütfen ffprobe'un ffmpeg ile aynı klasörde olduğundan emin ol.")
-    return ffprobe_path
+# FFmpeg ve ffprobe sistem PATH'inden direkt çağrılacak şekilde sabit tanımlar
+FFMPEG_BIN = "ffmpeg"
+FFPROBE_BIN = "ffprobe"
+
+# Yardımcı fonksiyonlar
 
 def get_media_duration(file_path):
-    ffprobe_path = get_ffprobe_path()
     cmd = [
-        ffprobe_path, '-i', file_path,
+        FFPROBE_BIN, '-i', file_path,
         '-show_entries', 'format=duration',
         '-v', 'quiet',
         '-of', 'csv=p=0'
@@ -56,17 +52,16 @@ def merge_wavs(wav_paths, out_path):
         combined += AudioSegment.from_wav(w)
     combined.export(out_path, format='wav')
 
-def adjust_audio_length(audio_path, video_duration, ffmpeg_path, base_dir, tag):
+def adjust_audio_length(audio_path, video_duration, base_dir, tag):
     audio_duration = get_media_duration(audio_path)
     if audio_duration == 0:
         return audio_path
     rate = video_duration / audio_duration
     if abs(rate - 1.0) < 0.01:
         return audio_path  # Neredeyse aynıysa gerek yok
-    # FFmpeg'in atempo filtresi 0.5-2.0 arası çalışır, gerekirse zincirle
     filters = []
-    orig_rate = rate
     temp_audio = os.path.join(base_dir, f"adjusted_{tag}.wav")
+    # atempo filtresi sadece 0.5-2.0 arası çalışır, zincirliyoruz
     while rate < 0.5:
         filters.append('atempo=0.5')
         rate /= 0.5
@@ -76,7 +71,7 @@ def adjust_audio_length(audio_path, video_duration, ffmpeg_path, base_dir, tag):
     filters.append(f'atempo={rate:.4f}')
     filter_str = ','.join(filters)
     cmd = [
-        ffmpeg_path, '-y', '-i', audio_path,
+        FFMPEG_BIN, '-y', '-i', audio_path,
         '-filter:a', filter_str,
         temp_audio
     ]
@@ -130,13 +125,9 @@ def dub_video_main(input_video_path, target_lang):
                 time.sleep(wait)
         raise RuntimeError("❗ Maksimum deneme sayısı aşıldı, LLM isteği başarısız oldu.")
 
-    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-    if not os.path.exists(ffmpeg_path):
-        raise RuntimeError(f"❗ ffmpeg binary bulunamadı: {ffmpeg_path}")
-
     # --- 1. Videodan ses çıkar ---
     print(f"🎬 Videodan ses çıkarılıyor: {input_video_path} → {input_audio}")
-    cmd = [ffmpeg_path, '-y', '-i', input_video_path, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', input_audio]
+    cmd = [FFMPEG_BIN, '-y', '-i', input_video_path, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', input_audio]
     subprocess.run(cmd, check=True)
 
     # --- 2. Whisper ile metne dök ---
@@ -192,6 +183,7 @@ def dub_video_main(input_video_path, target_lang):
             speaker_wav=input_audio,
             language=target_lang
         )
+        print(f'    > Dosya boyutu: {os.path.getsize(wav_name)} bytes')
         wav_files.append(wav_name)
     merge_wavs(wav_files, out_path=output_audio)
     for w in wav_files:
@@ -200,7 +192,7 @@ def dub_video_main(input_video_path, target_lang):
 
     # --- 5. Ses-video senkronizasyonu ---
     video_duration = get_media_duration(input_video_path)
-    adjusted_audio = adjust_audio_length(output_audio, video_duration, ffmpeg_path, base_dir, f"{base}_{target_lang}")
+    adjusted_audio = adjust_audio_length(output_audio, video_duration, base_dir, f"{base}_{target_lang}")
     if adjusted_audio != output_audio:
         output_audio = adjusted_audio
         print(f"🔄 Dublaj sesi video süresine uyarlandı: {output_audio}")
@@ -208,7 +200,7 @@ def dub_video_main(input_video_path, target_lang):
     # --- 6. Yeni sesi videoya göm ---
     print(f"🎥 Yeni sesi videoya gömülüyor: {input_video_path} + {output_audio} → {output_video}")
     cmd = [
-        ffmpeg_path, '-y',
+        FFMPEG_BIN, '-y',
         '-i', input_video_path,
         '-i', output_audio,
         '-c:v', 'copy',
